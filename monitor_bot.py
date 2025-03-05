@@ -1,85 +1,221 @@
-import json
-import time
-import requests
 import pandas as pd
 from web3 import Web3
+import time
+import requests
+import json
+import logging
+from colorama import Fore, Style, init
 
-# Ethereum RPC URL using your Alchemy API key
-ETH_RPC_URL = "https://eth-mainnet.g.alchemy.com/v2/YOUR_ALCHEMY_API_KEY"
+# Initialize colorama for colored terminal output
+init(autoreset=True)
 
-# Load hacker addresses from CSV file
-HACKER_ADDRESSES_FILE = "address.csv"
-try:
-    df = pd.read_csv(HACKER_ADDRESSES_FILE)
-    hacker_addresses = set(df['address'].astype(str).str.replace('"', '').str.lower())
-except Exception as e:
-    print("Error reading CSV file:", e)
-    exit()
+# 🚀 Ethereum JSON-RPC URL (Using Alchemy)
+JSON_RPC_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
 
-# Latest Major Exchange Addresses (2024-2025)
+# 📂 CSV file path
+csv_file = "address.csv"
+
+# Discord Webhook URL
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1346791132817915965/6N7yCTc72eMh6-S3M5GrK8GOPpFQTozaa_sOJWLQ5YSnx1O-VPOSUaS5UrkYj2eYg7qN"
+
+# ERC-20 Transfer Event Signature
+ERC20_TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+# Initialize Web3
+web3 = Web3(Web3.HTTPProvider(JSON_RPC_URL))
+
+def send_discord_alert(message):
+    """Send an alert to Discord using the webhook."""
+    payload = {
+        "content": message
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(payload), headers=headers)
+        if response.status_code == 204:
+            logger.info(f"{Fore.GREEN}✅ Discord alert sent successfully!")
+        else:
+            logger.error(f"{Fore.RED}❌ Failed to send Discord alert: {response.status_code}")
+    except Exception as e:
+        logger.error(f"{Fore.RED}❌ Error sending Discord alert: {e}")
+
+def clean_address(address):
+    """Sanitize and validate Ethereum addresses from CSV."""
+    try:
+        if not isinstance(address, str):  
+            return None  # Ignore non-string values
+        
+        address = address.strip().replace("'", "").replace('"', "")  # Remove spaces & quotes
+        
+        if Web3.is_address(address):  # Validate Ethereum address
+            return Web3.to_checksum_address(address)
+        else:
+            logger.warning(f"{Fore.YELLOW}⚠️ Skipping invalid address: {address}")
+            return None  # Ignore invalid addresses
+    except Exception as e:
+        logger.error(f"{Fore.RED}❌ Error cleaning address {address}: {e}")
+        return None
+
+def load_addresses(csv_file):
+    """Load and clean addresses from CSV safely."""
+    try:
+        logger.info(f"{Fore.BLUE}📂 Loading addresses from {csv_file}...")
+        df = pd.read_csv(csv_file, header=None, dtype=str)  # Read CSV safely
+        addresses = [clean_address(addr) for addr in df[0].tolist()]  # Clean addresses
+        addresses = [addr for addr in addresses if addr is not None]  # Remove None values
+        
+        if not addresses:
+            logger.error(f"{Fore.RED}❌ No valid addresses found! Please check the CSV file.")
+            return []
+        
+        logger.info(f"{Fore.GREEN}✅ Successfully loaded {len(addresses)} valid addresses.")
+        return addresses
+    except Exception as e:
+        logger.error(f"{Fore.RED}❌ Error loading CSV file: {e}")
+        return []
+
+# 🔍 Major Exchanges and Bridges Hot Wallets
 EXCHANGE_ADDRESSES = {
-    "Binance": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "Binance": "0x3f5CE5FBFe3E9af3971dD833D26bA9eEeC09D9d3",
     "Coinbase": "0x503828976D22510aad0201ac7EC88293211D23Da",
-    "Kraken": "0x2910543af39aba0cd09dbb2d50200b3e800a63d2",
-    "Gemini": "0xd24400ae8bfebb18ca49be86258a3c749cf46853",
-    "Bitfinex": "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa",
-    "KuCoin": "0x2b5634c42055806a59e9107ed44d43c426e58258",
-    "OKX": "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b",
-    "Gate.io": "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
-    "Bybit": "0xf89d7b9c864f589bbf53a82105107622b35eaa40",
-    "Crypto.com": "0x6262998ced04146fa42253a5c0af90ca02dfd2a3",
-    "Bitstamp": "0x00bdb5699745f5b860228c8f939abf1b9ae374ed",
-    "Poloniex": "0x32be343b94f860124dc4fee278fdcbd38c102d88",
-    "Bithumb": "0x88d34944cf554e9cccf4a24292d891f620e9c94f",
-    "Upbit": "0x390de26d772d2e2005c6d1d24afc902bae37a4bb",
+    "Kraken": "0x9B86d1c5b9F35d6B4c79A68B3FCFBa0f24E62D29",
+    "KuCoin": "0xEB2629a2734e272Bcc07BDA959863f316F4bD4Cf",
+    "OKX": "0x2B5634C42055806a59e9107ED44D43c426E58258",
+    "Huobi": "0x5c985E89D7A0F5aEbF02E7D03cCb861a4290f2C2",
+    "Bybit": "0x324c5c27e7b0c5987dbbdbbe5e9e9fa11b10a711",
+    "Gate.io": "0xD4B9a6A673fbC60F57E4D1B765D9B144897B2e99",
+    "Bitfinex": "0x876eabF441B2EE5B5b0554FD502a8e0600950cFa",
+    "MEXC": "0x47a91457a3a1f700097199fd63c039c4784384ab",
+    "Crypto.com": "0x59A5208B32e627891C389EBafc644145224006E8",
+    "Bitstamp": "0x4BFEEbe9D8DB97813bdCcB6379E20EfaA772A16b",
+    "Upbit": "0x653477c392c16b0765603074f15760c43b4a70d4",
+    "Bithumb": "0x4D0F77DaD7aEdDBe4b1fd202F0F8126F0DB4Bff3",
+    "OKCoin": "0x35F3AF0b10eC2eD4E251162F4D4B3896F37cC659",
+    "Bitget": "0xc21D6473F84aCB07A5cB84c1D2216dc63c99aB49",
+    "Gemini": "0xB527a981e1D415af696936B3174F2d7AC8d1153b",
+    
+    # 🌉 Bridges
+    "Multichain": "0xD2D1F29A95A1aE3F1B4C42998B3019F0cF3a3D46",
+    "Synapse": "0x2796317b0fF8538F253012862c06787Adfb8cEb6",
+    "Stargate": "0x8731d54E9D02c286767d56ac03e8037C07e01e98",
+    "Hop Protocol": "0x8f5b09d19F684B7cDA50DeF94b8fDf19c315ABa1",
+    "Across Protocol": "0xE4F1A71cE87eFD6EAcA5fb1f406B9C094c99eD72",
+    "Celer Bridge": "0x5427a3Aca4b205FF8E9F092F8e576Ce066C242c5",
 }
 
-# Latest Major Bridge Addresses (2024-2025)
-BRIDGE_ADDRESSES = {
-    "Multichain": "0x13b432914a996b0a48695df9b2d701eda45ff264",
-    "Synapse": "0x2796317b0ff8538f253012862c06787adfb8ceb6",
-    "Stargate": "0x296f55f8fb28e498b858d0bcda06d955b2cb3f97",
-    "cBridge": "0x841ce48f9446c8e281d3f1444cb859b4a6d0738c",
-    "Hop Protocol": "0x3666f603cc164936c1b87e207f36beba4ac5f18a",
-    "Thorchain": "0x42a5ed456650a09dc10ebc6361a7480fdd61f27b",
-    "Avalanche Bridge": "0x8eb8a3b98659cce290402893d0123abb75e3ab28",
-    "Arbitrum Bridge": "0x011b6e24ffb0b5f5fcc564cf4183c5bbbc96d515",
+# 🚫 DeFi Mixers and Laundering Protocols
+DEFI_MIXERS = {
+    "Tornado Cash": "0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF",
+    "Thorchain Router": "0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146",
+    # Add more DeFi mixers or laundering protocols here
 }
 
-# Connect to Ethereum network
-w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
-if not w3.isConnected():
-    print("Failed to connect to Ethereum network!")
-    exit()
+EXCHANGE_NAMES = {Web3.to_checksum_address(v): k for k, v in EXCHANGE_ADDRESSES.items()}
+DEFI_MIXER_ADDRESSES = {Web3.to_checksum_address(v) for v in DEFI_MIXERS.values()}
 
-print("Connected to Ethereum network.")
+def is_defi_mixer(address):
+    """Check if an address is a known DeFi mixer or laundering protocol."""
+    return address in DEFI_MIXER_ADDRESSES
 
-# Function to track transactions in real time
-def track_transactions():
+def get_latest_block_number():
+    """Get the latest block number."""
+    return web3.eth.block_number
+
+def get_transactions_in_block(block_number):
+    """Get all transactions in a specific block."""
+    block = web3.eth.get_block(block_number, full_transactions=True)
+    return block.transactions
+
+def track_transaction_chain(from_address, tx_hash, depth=0, max_depth=30):
+    """Recursively track a transaction chain until it reaches an exchange or bridge."""
+    if depth >= max_depth:
+        return None
+
+    try:
+        receipt = web3.eth.get_transaction_receipt(tx_hash)
+        for log in receipt["logs"]:
+            if log["topics"][0].hex() == ERC20_TRANSFER_TOPIC:
+                to_address = Web3.to_checksum_address(log["topics"][2][-40:])
+                
+                # Skip if the to_address is a DeFi mixer or laundering protocol
+                if is_defi_mixer(to_address):
+                    logger.info(f"{Fore.YELLOW}⚠️ Skipping DeFi mixer/laundering protocol: {to_address}")
+                    return None
+                
+                if to_address in EXCHANGE_NAMES:
+                    return to_address
+                else:
+                    # Check if the to_address sends any transactions
+                    next_tx = track_transaction_chain(to_address, tx_hash, depth + 1, max_depth)
+                    if next_tx:
+                        return next_tx
+        return None
+    except Exception as e:
+        logger.error(f"{Fore.RED}❌ Error tracking transaction chain: {e}")
+        return None
+
+def monitor_transactions(addresses):
+    """Monitor transactions and send alerts."""
+    latest_block_number = get_latest_block_number()
+    
     while True:
         try:
-            latest_block = w3.eth.block_number
-            block = w3.eth.get_block(latest_block, full_transactions=True)
+            current_block_number = get_latest_block_number()
             
-            for tx in block.transactions:
-                from_address = tx["from"].lower()
-                to_address = tx["to"].lower() if tx["to"] else None
-                value = w3.from_wei(tx["value"], "ether")
-                tx_hash = tx["hash"].hex()  # Get transaction hash
-
-                # Alert if a hacker address sends ETH to an exchange or bridge
-                if from_address in hacker_addresses and (to_address in EXCHANGE_ADDRESSES.values() or to_address in BRIDGE_ADDRESSES.values()):
-                    print(f"🚨 Hacker Transaction Detected!")
-                    print(f"🟢 From (Hacker): {from_address}")
-                    print(f"🔵 To (Exchange/Bridge): {to_address}")
-                    print(f"💰 Amount: {value} ETH")
-                    print(f"🔗 Tx Hash: https://etherscan.io/tx/{tx_hash}")
-                    print("-" * 50)
-
-            time.sleep(10)  # Check every 10 seconds
+            if current_block_number > latest_block_number:
+                for block_number in range(latest_block_number + 1, current_block_number + 1):
+                    transactions = get_transactions_in_block(block_number)
+                    
+                    for tx in transactions:
+                        from_address = tx["from"]
+                        to_address = tx.get("to")
+                        
+                        # Check if the transaction is from a monitored address
+                        if from_address.lower() in addresses:
+                            # Skip if the to_address is a DeFi mixer or laundering protocol
+                            if is_defi_mixer(to_address):
+                                logger.info(f"{Fore.YELLOW}⚠️ Skipping DeFi mixer/laundering protocol: {to_address}")
+                                continue
+                            
+                            # Check if the recipient is a known exchange/bridge
+                            if to_address in EXCHANGE_NAMES:
+                                message = f"⚠️ ALERT: Hacker sent ETH to {EXCHANGE_NAMES[to_address]}!\n🔗 Transaction Hash: {tx['hash'].hex()}"
+                                logger.info(f"{Fore.YELLOW}{message}")
+                                send_discord_alert(message)
+                            else:
+                                # Track the transaction chain
+                                final_destination = track_transaction_chain(from_address, tx["hash"])
+                                if final_destination and final_destination in EXCHANGE_NAMES:
+                                    message = f"⚠️ ALERT: Hacker sent tokens to {EXCHANGE_NAMES[final_destination]}!\n🔗 Transaction Hash: {tx['hash'].hex()}"
+                                    logger.info(f"{Fore.YELLOW}{message}")
+                                    send_discord_alert(message)
+                
+                latest_block_number = current_block_number
+            
+            time.sleep(10)  # Poll every 10 seconds
         except Exception as e:
-            print("Error:", e)
+            logger.error(f"{Fore.RED}❌ Error monitoring transactions: {e}")
             time.sleep(10)
 
+# 🔄 Run monitoring loop
+def main():
+    logger.info(f"{Fore.BLUE}🚀 Starting Ethereum transaction monitor...")
+    addresses = load_addresses(csv_file)
+    if not addresses:
+        logger.error(f"{Fore.RED}❌ No valid addresses to monitor. Exiting.")
+        return
+
+    # Convert addresses to lowercase for comparison
+    addresses = [addr.lower() for addr in addresses]
+    
+    # Start monitoring
+    monitor_transactions(addresses)
+
 if __name__ == "__main__":
-    track_transactions()
+    main()

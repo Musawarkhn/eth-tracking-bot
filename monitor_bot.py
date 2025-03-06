@@ -3,18 +3,12 @@ from web3 import Web3
 import time
 import requests
 import json
-import logging
-from colorama import Fore, Style, init
+import sqlite3
 import signal
 import sys
-import sqlite3
 
-# Initialize colorama for colored terminal output
-init(autoreset=True)
-
-# Alchemy API Key and URL
-ALCHEMY_API_KEY = "anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
-ALCHEMY_URL = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+# Alchemy URL (with API key included)
+ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
 
 # Discord Webhook URL
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1346791132817915965/6N7yCTc72eMh6-S3M5GrK8GOPpFQTozaa_sOJWLQ5YSnx1O-VPOSUaS5UrkYj2eYg7qN"
@@ -33,24 +27,20 @@ conn.commit()
 
 # List of flagged DeFi protocols (mixers, bridges, privacy tools, etc.)
 FLAGGED_DEFI_PROTOCOLS = {
-    "0xd37bbe5744d730a1d98d8dc97c42f0ca46ad7146": "Thorchain Router V4.1.1",
-    "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf": "Tornado Cash",
-    "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap Router",
-    "0x1111111254fb6c44bac0bed2854e76f90643097d": "1inch Exchange",
+    "0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146": "Thorchain Router V4.1.1",
+    "0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF": "Tornado Cash",
+    "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D": "Uniswap Router",
+    "0x1111111254fb6c44bAC0beD2854e76F90643097d": "1inch Exchange",
 }
 
 def is_flagged_defi_protocol(address):
     """Check if an address is a flagged DeFi protocol."""
-    return address and address.lower() in FLAGGED_DEFI_PROTOCOLS
-
-# Logger Setup
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(_name_)
+    return address.lower() in FLAGGED_DEFI_PROTOCOLS
 
 # Handle script termination
 def signal_handler(sig, frame):
-    logger.info(f"{Fore.RED}🚨 Script stopped by user.")
-    conn.close()  # Ensure database closes properly
+    print("🚨 Script stopped by user.")
+    conn.close()
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -62,11 +52,11 @@ def send_discord_alert(message):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(payload), headers=headers)
         if response.status_code == 204:
-            logger.info(f"{Fore.GREEN}✅ Discord alert sent!")
+            print("✅ Discord alert sent!")
         else:
-            logger.error(f"{Fore.RED}❌ Failed to send Discord alert: {response.status_code}")
+            print(f"❌ Failed to send Discord alert: {response.status_code}")
     except Exception as e:
-        logger.error(f"{Fore.RED}❌ Error sending Discord alert: {e}")
+        print(f"❌ Error sending Discord alert: {e}")
 
 def clean_address(address):
     """Sanitize and validate Ethereum addresses."""
@@ -78,30 +68,27 @@ def clean_address(address):
 def load_addresses(csv_file):
     """Load addresses from CSV."""
     try:
-        logger.info(f"{Fore.BLUE}📂 Loading addresses from {csv_file}...")
+        print(f"📂 Loading addresses from {csv_file}...")
         df = pd.read_csv(csv_file, header=None, dtype=str)
         addresses = [clean_address(addr) for addr in df[0].tolist() if clean_address(addr)]
         if not addresses:
-            logger.error(f"{Fore.RED}❌ No valid addresses found.")
+            print("❌ No valid addresses found.")
             return []
-        logger.info(f"{Fore.GREEN}✅ Loaded {len(addresses)} valid addresses.")
+        print(f"✅ Loaded {len(addresses)} valid addresses.")
         return addresses
     except Exception as e:
-        logger.error(f"{Fore.RED}❌ Error loading CSV file: {e}")
+        print(f"❌ Error loading CSV file: {e}")
         return []
 
 def is_processed(tx_hash):
     """Check if a transaction was already processed."""
-    if not tx_hash:
-        return True
     cursor.execute("SELECT processed FROM transactions WHERE tx_hash = ?", (tx_hash,))
     return cursor.fetchone() is not None
 
 def mark_processed(tx_hash):
     """Mark transaction as processed."""
-    if tx_hash:
-        cursor.execute("INSERT OR IGNORE INTO transactions (tx_hash, processed) VALUES (?, ?)", (tx_hash, True))
-        conn.commit()
+    cursor.execute("INSERT OR IGNORE INTO transactions (tx_hash, processed) VALUES (?, ?)", (tx_hash, True))
+    conn.commit()
 
 def get_transactions(address, start_block, end_block):
     """Fetch transactions using Alchemy API."""
@@ -110,8 +97,8 @@ def get_transactions(address, start_block, end_block):
         "id": 1,
         "method": "alchemy_getAssetTransfers",
         "params": [{
-            "fromBlock": str(hex(start_block)),
-            "toBlock": str(hex(end_block)),
+            "fromBlock": hex(start_block),
+            "toBlock": hex(end_block),
             "fromAddress": address,
             "category": ["external", "internal", "erc20", "erc721", "erc1155"]
         }]
@@ -120,11 +107,58 @@ def get_transactions(address, start_block, end_block):
     
     try:
         response = requests.post(ALCHEMY_URL, json=payload, headers=headers)
-        if response.status_code == 200:
-            return response.json().get("result", {}).get("transfers", [])
+        return response.json().get("result", {}).get("transfers", []) if response.status_code == 200 else []
     except Exception as e:
-        logger.error(f"{Fore.RED}❌ Error fetching transactions: {e}")
-    return []
+        print(f"❌ Error fetching transactions: {e}")
+        return []
+
+def is_exchange_or_bridge(address):
+    """Identify if an address is an exchange or bridge."""
+    label = get_address_label(address).lower()
+    return "exchange" in label or "bridge" in label
+
+def get_address_label(address):
+    """Fetch Alchemy's label for an address."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "alchemy_getTokenMetadata", "params": [address]}
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(ALCHEMY_URL, json=payload, headers=headers)
+        return response.json().get("result", {}).get("name", "Unknown") if response.status_code == 200 else "Unknown"
+    except Exception as e:
+        print(f"❌ Error fetching label: {e}")
+        return "Unknown"
+
+def track_transaction_chain(from_address, tx_hash, depth=0, max_depth=30, encountered_defi=False):
+    """Track transaction chain to detect fund movement."""
+    if depth >= max_depth:
+        return None
+
+    try:
+        tx = web3.eth.get_transaction(tx_hash)
+        to_address = tx.get("to")
+
+        if not to_address:
+            return None
+
+        if is_flagged_defi_protocol(to_address):
+            print(f"🔹 Wallet {from_address} interacted with {FLAGGED_DEFI_PROTOCOLS[to_address.lower()]} at depth {depth}.")
+            return {"from": from_address, "to": to_address, "tx_hash": tx_hash, "depth": depth, "next": None}
+
+        if is_exchange_or_bridge(to_address):
+            if encountered_defi:
+                print("🔹 No alert: Transaction reached exchange but passed through a DeFi protocol.")
+                return None
+            return {"from": from_address, "to": to_address, "tx_hash": tx_hash, "depth": depth, "next": None}
+
+        next_tx = track_transaction_chain(to_address, tx_hash, depth + 1, max_depth, encountered_defi)
+        if next_tx:
+            return {"from": from_address, "to": to_address, "tx_hash": tx_hash, "depth": depth, "next": next_tx}
+
+    except Exception as e:
+        print(f"❌ Error tracking transaction: {e}")
+    
+    return None
 
 def monitor_transactions(addresses):
     """Monitor transactions and send alerts when needed."""
@@ -138,24 +172,24 @@ def monitor_transactions(addresses):
 
                 for tx in transactions:
                     tx_hash = tx.get("hash")
-                    tx_to = tx.get("to")
-
-                    if is_processed(tx_hash) or not tx_to:
+                    if is_processed(tx_hash):
                         continue
-
-                    if is_flagged_defi_protocol(tx_to):
-                        send_discord_alert(f"⚠️ ALERT: Address {tx_to} is flagged as {FLAGGED_DEFI_PROTOCOLS.get(tx_to.lower(), 'Unknown')}")
-
+                    
+                    chain = track_transaction_chain(tx.get("from"), tx_hash)
+                    if chain and not is_flagged_defi_protocol(chain["to"]):
+                        send_discord_alert(f"⚠️ ALERT: Fund movement detected!\n🔗 {chain}")
+                    
                     mark_processed(tx_hash)
 
             latest_block_number = current_block_number
         time.sleep(300)
 
 def main():
-    logger.info(f"{Fore.BLUE}🚀 Starting Ethereum transaction monitor...")
+    print("🚀 Starting Ethereum transaction monitor...")
     addresses = load_addresses(CSV_FILE)
     if addresses:
         monitor_transactions(addresses)
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
+

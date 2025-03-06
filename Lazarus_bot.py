@@ -1,9 +1,11 @@
+import asyncio
+import aiohttp
+from web3 import Web3
 import time
 import requests
 import json
 import sqlite3
 import pandas as pd
-from web3 import Web3
 
 # Alchemy URL and API Key
 ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
@@ -23,6 +25,21 @@ THORCHAIN_ADDRESS = Web3.to_checksum_address("0xD37BbE5744D730a1d98d8DC97c42F0Ca
 
 # Check interval in seconds (10 minutes = 600 seconds)
 CHECK_INTERVAL = 600
+
+# Batch size for async processing
+BATCH_SIZE = 100
+
+def initialize_db():
+    """Initialize the SQLite database and create the transactions table if it doesn't exist."""
+    with sqlite3.connect("transactions.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                tx_hash TEXT PRIMARY KEY,
+                processed BOOLEAN
+            )
+        """)
+        conn.commit()
 
 def is_thorchain(address):
     """Check if an address is Thorchain."""
@@ -75,34 +92,6 @@ def mark_processed(tx_hash):
         cursor.execute("INSERT OR IGNORE INTO transactions (tx_hash, processed) VALUES (?, ?)", (tx_hash, True))
         conn.commit()
 
-def get_transactions(address, start_block, end_block, retries=3):
-    """Fetch transactions for a single address using Alchemy API with retry logic."""
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "alchemy_getAssetTransfers",
-        "params": [{
-            "fromBlock": hex(start_block),
-            "toBlock": hex(end_block),
-            "fromAddress": address,  # Single address
-            "category": ["external", "internal", "erc20"]
-        }]
-    }
-    headers = {"Content-Type": "application/json"}
-    for attempt in range(retries):
-        try:
-            response = requests.post(ALCHEMY_URL, json=payload, headers=headers)
-            if response.status_code == 200:
-                return response.json().get("result", {}).get("transfers", [])
-            else:
-                print(f"❌ API Error (Attempt {attempt + 1}): {response.status_code}")
-                print(f"Response: {response.text}")  # Debugging log
-                time.sleep(2 ** attempt)  # Exponential backoff
-        except Exception as e:
-            print(f"❌ Error fetching transactions for {address}: {e}")
-            time.sleep(2 ** attempt)  # Exponential backoff
-    return []  # Return empty list if all retries fail
-
 def get_address_label(address):
     """Fetch Alchemy's label for an address."""
     payload = {
@@ -128,86 +117,138 @@ def is_exchange_or_bridge(address):
     label = get_address_label(address).lower()
     return "exchange" in label or "bridge" in label
 
-def track_transaction_chain(from_address, to_address, tx_hash, depth=0, max_depth=30, chain=None, visited=None):
-    """Recursively track a transaction chain."""
+def get_transactions(addresses, start_block, end_block):
+    """Fetch transactions using Alchemy API (synchronous version for simplicity)."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "alchemy_getAssetTransfers",
+        "params": [{
+            "fromBlock": hex(start_block),
+            "toBlock": hex(end_block),
+            "fromAddress": addresses,
+            "category": ["external", "internal", "erc20"]
+        }]
+    }
+    headers = {"Content-Type": "application/json"}
+    try:
+        response = requests.post(ALCHEMY_URL, json=payload, headers=headers)
+        if response.status_code == 200:
+            return response.json().get("result", {}).get("transfers", [])
+        else:
+            print("❌ Error fetching transactions:", response.text)
+            return []
+    except Exception as e:
+        print(f"❌ Error fetching transactions: {e}")
+        return []
+
+def track_external_wallet(wallet_address, depth=0, max_depth=30, chain=None, visited=None):
+    """Recursively track transactions from an external wallet."""
     if chain is None:
         chain = []
     if visited is None:
         visited = set()
-    if depth >= max_depth or from_address in visited or to_address in visited:
-        return chain  # Stop if max depth is reached or addresses are already visited
+    if depth >= max_depth or wallet_address in visited:
+        return chain  # Stop if max depth is reached or wallet is already visited
 
-    visited.add(from_address)
-    visited.add(to_address)
+    visited.add(wallet_address)  # Mark wallet as visited
 
-    # Fetch labels for addresses
-    from_label = get_address_label(from_address)
-    to_label = get_address_label(to_address)
+    try:
+        # Fetch transactions for the external wallet
+        transactions = get_transactions([wallet_address], web3.eth.block_number - 100, web3.eth.block_number)
+        for tx in transactions:
+            tx_hash, to_address = tx.get("hash"), tx.get("to")
+            if not to_address or is_processed(tx_hash):
+                continue
 
-    # Append transaction to chain
-    chain.append({
-        "from": from_address,
-        "from_label": from_label,
-        "to": to_address,
-        "to_label": to_label,
-        "tx_hash": tx_hash,
-        "depth": depth
-    })
+            to_address = Web3.to_checksum_address(to_address)
+            from_address = Web3.to_checksum_address(tx.get("from"))
 
-    # Check if Thorchain is involved
-    if is_thorchain(to_address):
-        print(f"⚠️ Transaction chain stopped: Thorchain detected at {to_address}")
-        return chain  # Stop tracking this chain
+            # Fetch labels for addresses
+            from_label = get_address_label(from_address)
+            to_label = get_address_label(to_address)
 
-    # Check if the recipient is an exchange or bridge
-    if is_exchange_or_bridge(to_address):
-        print(f"⚠️ Transaction chain ended at {to_address} ({to_label})")
-        return chain
+            # Append transaction to chain
+            chain.append({
+                "from": from_address,
+                "from_label": from_label,
+                "to": to_address,
+                "to_label": to_label,
+                "tx_hash": tx_hash,
+                "depth": depth
+            })
 
-    # Fetch transactions for the recipient address
-    transactions = get_transactions(to_address, web3.eth.block_number - 100, web3.eth.block_number)
-    for tx in transactions:
-        next_tx_hash, next_to_address = tx.get("hash"), tx.get("to")
-        if not next_to_address or is_processed(next_tx_hash):
-            continue
+            # Check if Thorchain is involved
+            if is_thorchain(to_address):
+                print(f"⚠️ Transaction chain stopped: Thorchain detected at {to_address}")
+                return chain  # Stop tracking this chain
 
-        next_to_address = Web3.to_checksum_address(next_to_address)
-        next_from_address = Web3.to_checksum_address(tx.get("from"))
+            # Check if the recipient is an exchange or bridge
+            if is_exchange_or_bridge(to_address):
+                print(f"⚠️ Transaction chain ended at {to_address} ({to_label})")
+                return chain
 
-        # Recursively track the next transaction in the chain
-        return track_transaction_chain(to_address, next_to_address, next_tx_hash, depth + 1, max_depth, chain, visited)
+            # Recursively track the next wallet in the chain
+            return track_external_wallet(to_address, depth + 1, max_depth, chain, visited)
+
+    except Exception as e:
+        print(f"❌ Error tracking external wallet: {e}")
 
     return chain
 
+async def async_get_transactions(address_batch, start_block, end_block):
+    """Batch process addresses using async"""
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "alchemy_getAssetTransfers",
+            "params": [{
+                "fromBlock": hex(start_block),
+                "toBlock": hex(end_block),
+                "fromAddress": address_batch,  # Batch of addresses
+                "category": ["external", "internal", "erc20"]
+            }]
+        }
+        async with session.post(ALCHEMY_URL, json=payload) as response:
+            data = await response.json()
+            return data.get("result", {}).get("transfers", [])
+
+async def track_address_batch(address_batch, latest_block, current_block):
+    """Process a batch of addresses asynchronously"""
+    all_transactions = await async_get_transactions(address_batch, latest_block + 1, current_block)
+    for tx in all_transactions:
+        tx_hash, to_address = tx.get("hash"), tx.get("to")
+        if not to_address or is_processed(tx_hash):
+            continue
+
+        to_address = Web3.to_checksum_address(to_address)
+        from_address = Web3.to_checksum_address(tx.get("from"))
+
+        # Track the transaction chain
+        chain = track_external_wallet(to_address)
+        if chain:
+            print(f"🔗 Full Transaction Chain:\n{json.dumps(chain, indent=2)}")
+            send_discord_alert(f"🔔 Transaction Chain Detected:\n{json.dumps(chain, indent=2)}")
+            save_transaction_chain(chain)
+
+        mark_processed(tx_hash)
+
 def track_transactions(addresses):
-    """Monitor transactions and track fund movements."""
+    """Monitor transactions with batch processing + async (modified)"""
     latest_block = web3.eth.block_number
-    csv_addresses = set(addresses)  # Convert to set for faster lookup
-
-    while True:
-        current_block = web3.eth.block_number
-        if current_block > latest_block:
-            for address in addresses:  # Process addresses one at a time
-                print(f"📤 Fetching transactions for address: {address}")  # Debugging log
-                transactions = get_transactions(address, latest_block + 1, current_block)
-                for tx in transactions:
-                    tx_hash, to_address = tx.get("hash"), tx.get("to")
-                    if not to_address or is_processed(tx_hash):
-                        continue
-
-                    to_address = Web3.to_checksum_address(to_address)
-                    from_address = Web3.to_checksum_address(tx.get("from"))
-
-                    # Track the transaction chain
-                    chain = track_transaction_chain(from_address, to_address, tx_hash)
-                    if chain:
-                        print(f"🔗 Full Transaction Chain:\n{json.dumps(chain, indent=2)}")
-                        send_discord_alert(f"🔔 Transaction Chain Detected:\n{json.dumps(chain, indent=2)}")
-                        save_transaction_chain(chain)
-
-                    mark_processed(tx_hash)
-            latest_block = current_block
-        time.sleep(CHECK_INTERVAL)  # 10-minute delay between checks
+    try:
+        while True:
+            current_block = web3.eth.block_number
+            if current_block > latest_block:
+                # Process in batches of 100 addresses
+                for i in range(0, len(addresses), BATCH_SIZE):
+                    batch = addresses[i:i+BATCH_SIZE]
+                    asyncio.run(track_address_batch(batch, latest_block, current_block))
+                latest_block = current_block
+            time.sleep(CHECK_INTERVAL)
+    except KeyboardInterrupt:
+        print("\n🛑 Transaction monitor stopped by user.")
 
 def save_transaction_chain(chain):
     """Save the transaction chain to a file."""
@@ -225,4 +266,5 @@ def main():
         print("❌ No valid wallets to track.")
 
 if __name__ == "__main__":
+    initialize_db()  # Initialize the SQLite database before starting
     main()

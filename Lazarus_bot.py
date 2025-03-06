@@ -27,14 +27,14 @@ conn.commit()
 
 # List of flagged DeFi protocols (mixers, bridges, privacy tools, etc.)
 FLAGGED_DEFI_PROTOCOLS = {
-    "0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146": "Thorchain Router V4.1.1",
-    "0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF": "Tornado Cash",
-    "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D": "Uniswap Router",
-    "0x1111111254fb6c44bAC0beD2854e76F90643097d": "1inch Exchange",
+    Web3.to_checksum_address("0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146"): "Thorchain Router V4.1.1",
+    Web3.to_checksum_address("0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF"): "Tornado Cash",
+    Web3.to_checksum_address("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"): "Uniswap Router",
+    Web3.to_checksum_address("0x1111111254fb6c44bAC0beD2854e76F90643097d"): "1inch Exchange",
 }
 
 def is_flagged_defi_protocol(address):
-    return address.lower() in FLAGGED_DEFI_PROTOCOLS
+    return Web3.to_checksum_address(address) in FLAGGED_DEFI_PROTOCOLS
 
 # Handle script termination
 def signal_handler(sig, frame):
@@ -106,26 +106,23 @@ def track_transactions(addresses):
                     if not to_address or is_processed(tx_hash):
                         continue
                     
+                    to_address = Web3.to_checksum_address(to_address)
                     if is_flagged_defi_protocol(to_address):
-                        print(f"⚠️ FLAGGED TX: {tx_hash} → {FLAGGED_DEFI_PROTOCOLS[to_address.lower()]}")
+                        print(f"⚠️ FLAGGED TX: {tx_hash} → {FLAGGED_DEFI_PROTOCOLS[to_address]}")
+                        continue  # Skip processing but keep tracking others
                     
-                    elif "exchange" in get_address_label(to_address).lower() or "bridge" in get_address_label(to_address).lower():
-                        alert_message = f"⚠️ ALERT: Funds moved to {get_address_label(to_address)}\n🔗 TX: {tx_hash}"
+                    address_label = get_address_label(to_address)
+                    if "exchange" in address_label.lower() or "bridge" in address_label.lower():
+                        alert_message = f"⚠️ ALERT: Funds moved to {address_label}\n🔗 TX: {tx_hash}"
                         send_discord_alert(alert_message)
                         print(alert_message)
                     
                     mark_processed(tx_hash)
             latest_block = current_block
-        time.sleep(300)
+        time.sleep(60)  # Updated to 1 minute instead of 5 minutes
 
 def get_address_label(address):
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "alchemy_getTokenMetadata", "params": [address]}
-    headers = {"Content-Type": "application/json"}
-    try:
-        response = requests.post(ALCHEMY_URL, json=payload, headers=headers)
-        return response.json().get("result", {}).get("name", "Unknown") if response.status_code == 200 else "Unknown"
-    except Exception as e:
-        return "Unknown"
+    return "Exchange" if "exchange" in address.lower() else "Unknown"
 
 def main():
     print("👁️ The Eyes are watching...\nYou can run, but you can’t hide. The ledger remembers.")

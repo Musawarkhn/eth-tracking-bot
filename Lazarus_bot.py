@@ -64,16 +64,30 @@ def send_discord_alert(message, retries=3):
 
 def clean_address(address):
     """Sanitize and validate Ethereum addresses."""
-    if not isinstance(address, str):  
+    if not isinstance(address, str):
         return None
     address = address.strip().replace("'", "").replace('"', "")
     return Web3.to_checksum_address(address) if Web3.is_address(address) else None
 
 def load_addresses(csv_file):
-    """Load addresses from CSV."""
+    """Load addresses from CSV, skipping invalid or malformed entries."""
+    valid_addresses = []
+    invalid_addresses = []
     try:
         df = pd.read_csv(csv_file, header=None, dtype=str)
-        return [clean_address(addr) for addr in df[0].tolist() if clean_address(addr)]
+        for raw_addr in df[0].tolist():
+            cleaned = clean_address(raw_addr)
+            if cleaned:
+                valid_addresses.append(cleaned)
+            else:
+                invalid_addresses.append(raw_addr)
+        
+        if invalid_addresses:
+            print("⚠️ The following addresses are invalid and have been skipped:")
+            for inv in invalid_addresses:
+                print(f"  - {inv}")
+        
+        return valid_addresses
     except Exception as e:
         print(f"❌ Error loading CSV: {e}")
         return []

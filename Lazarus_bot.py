@@ -1,11 +1,11 @@
-import pandas as pd
-from web3 import Web3
 import time
 import requests
 import json
 import sqlite3
 import signal
 import sys
+import pandas as pd
+from web3 import Web3
 
 # Alchemy URL and API Key
 ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
@@ -228,7 +228,10 @@ def main():
     print("🚀 Starting Ethereum transaction monitor...")
     addresses = load_addresses(CSV_FILE)
     if addresses:
+        print(f"✅ Tracking {len(addresses)} valid wallets.")
         track_transactions(addresses)
+    else:
+        print("❌ No valid wallets to track.")
 
 if __name__ == "__main__":
     main()

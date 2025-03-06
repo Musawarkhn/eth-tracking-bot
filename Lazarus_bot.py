@@ -5,7 +5,6 @@ import time
 import requests
 import json
 import sqlite3
-import pandas as pd
 
 # Alchemy URL and API Key
 ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
@@ -14,8 +13,8 @@ ALCHEMY_API_KEY = "anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
 # Discord Webhook URL
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1346791132817915965/6N7yCTc72eMh6-S3M5GrK8GOPpFQTozaa_sOJWLQ5YSnx1O-VPOSUaS5UrkYj2eYg7qN"
 
-# CSV file path
-CSV_FILE = "address.csv"
+# Hackers API (JSON of addresses)
+HACKER_API_URL = "https://hackscan.hackbounty.io/public/hack-address.json"
 
 # Web3 Initialization
 web3 = Web3(Web3.HTTPProvider(ALCHEMY_URL))
@@ -69,27 +68,45 @@ def clean_address(address):
     address = address.strip().replace("'", "").replace('"', "")
     return Web3.to_checksum_address(address) if Web3.is_address(address) else None
 
-def load_addresses(csv_file):
-    """Load addresses from CSV, skipping invalid or malformed entries."""
+def load_addresses_from_api(api_url):
+    """
+    Fetch hacker addresses from the given API and extract all Ethereum addresses.
+    JSON structure looks like:
+    {
+      "0221": {
+        "eth": ["0x...", "0x...", ...],
+        "bsc": [...],
+        ...
+      },
+      "0222": { ... },
+      ...
+    }
+    We'll loop over each top-level key (e.g. "0221") and grab the "eth" array.
+    """
     valid_addresses = []
-    invalid_addresses = []
     try:
-        df = pd.read_csv(csv_file, header=None, dtype=str)
-        for raw_addr in df[0].tolist():
-            cleaned = clean_address(raw_addr)
-            if cleaned:
-                valid_addresses.append(cleaned)
-            else:
-                invalid_addresses.append(raw_addr)
+        response = requests.get(api_url)
+        if response.status_code != 200:
+            print(f"❌ Error fetching addresses from API: {response.status_code}")
+            return []
         
-        if invalid_addresses:
-            print("⚠️ The following addresses are invalid and have been skipped:")
-            for inv in invalid_addresses:
-                print(f"  - {inv}")
+        data = response.json()
+        # data might look like {"0221": {"eth": [...], "bsc": [...]}, "0222": {...}}
         
+        for date_key, chain_data in data.items():
+            # chain_data might be {"eth": [...], "bsc": [...], ...}
+            eth_list = chain_data.get("eth", [])
+            for addr in eth_list:
+                cleaned = clean_address(addr)
+                if cleaned:
+                    valid_addresses.append(cleaned)
+                else:
+                    print(f"⚠️ Skipping invalid address: {addr}")
+
+        print(f"✅ Loaded {len(valid_addresses)} valid ETH addresses from API.")
         return valid_addresses
     except Exception as e:
-        print(f"❌ Error loading CSV: {e}")
+        print(f"❌ Error loading addresses from API: {e}")
         return []
 
 def is_processed(tx_hash):
@@ -107,7 +124,7 @@ def mark_processed(tx_hash):
         conn.commit()
 
 def get_address_label(address):
-    """Fetch Alchemy's label for an address."""
+    """Fetch Alchemy's label for an address (optional if you want to identify addresses)."""
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -220,7 +237,7 @@ async def async_get_transactions(address_batch, start_block, end_block):
             "params": [{
                 "fromBlock": hex(start_block),
                 "toBlock": hex(end_block),
-                "fromAddress": address_batch,  # Batch of addresses
+                "fromAddress": address_batch,
                 "category": ["external", "internal", "erc20"]
             }]
         }
@@ -272,13 +289,16 @@ def save_transaction_chain(chain):
 
 def main():
     print("🚀 Starting Ethereum transaction monitor...")
-    addresses = load_addresses(CSV_FILE)
+    initialize_db()  # Initialize the SQLite database
+
+    # 1. Fetch addresses from the hackers API
+    addresses = load_addresses_from_api(HACKER_API_URL)
+    # 2. If we have valid addresses, track them
     if addresses:
-        print(f"✅ Tracking {len(addresses)} valid wallets.")
+        print(f"✅ Tracking {len(addresses)} addresses from the API.")
         track_transactions(addresses)
     else:
-        print("❌ No valid wallets to track.")
+        print("❌ No valid addresses to track from the API.")
 
 if __name__ == "__main__":
-    initialize_db()  # Initialize the SQLite database before starting
     main()

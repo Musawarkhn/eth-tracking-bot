@@ -2,8 +2,6 @@ import time
 import requests
 import json
 import sqlite3
-import signal
-import sys
 import pandas as pd
 from web3 import Web3
 
@@ -170,6 +168,12 @@ def track_external_wallet(wallet_address, depth=0, max_depth=30, chain=None, vis
             # Check if the recipient is an exchange or bridge
             if is_exchange_or_bridge(to_address):
                 print(f"⚠️ Transaction chain ended at {to_address} ({to_label})")
+                # Send detailed alert for the full chain
+                alert_message = "🔔 Transaction Chain Detected:\n"
+                for link in chain:
+                    alert_message += f"{link['from']} ({link['from_label']}) → {link['to']} ({link['to_label']})\n"
+                alert_message += f"🔚 Ended at: {to_address} ({to_label})"
+                send_discord_alert(alert_message)
                 return chain
 
             # Recursively track the next wallet in the chain
@@ -207,7 +211,6 @@ def track_transactions(addresses):
                         chain = track_external_wallet(to_address)
                         if chain:
                             print(f"🔗 Transaction Chain:\n{json.dumps(chain, indent=2)}")
-                            send_discord_alert(f"🔔 Transaction Chain Detected:\n{json.dumps(chain, indent=2)}")
                             save_transaction_chain(chain)
 
                     mark_processed(tx_hash)

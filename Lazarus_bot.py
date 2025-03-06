@@ -38,7 +38,7 @@ def is_flagged_defi_protocol(address):
 
 # Handle script termination
 def signal_handler(sig, frame):
-    print("🚨 Script stopped by user.")
+    print("\U0001F6A8 Script stopped by user.")
     conn.close()
     sys.exit(0)
 
@@ -130,6 +130,7 @@ def get_address_label(address):
 def main():
     print("👁️ The Eyes are watching...\nYou can run, but you can’t hide. The ledger remembers.")
     addresses = load_addresses(CSV_FILE)
+    print(f"🔍 Tracking {len(addresses)} valid addresses.")
     if addresses:
         track_transactions(addresses)
 

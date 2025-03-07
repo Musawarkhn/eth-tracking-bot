@@ -112,11 +112,21 @@ def get_transactions(address, start_block, end_block, retries=3):
             if response.status_code == 200:
                 return response.json().get("result", {}).get("transfers", [])
             else:
-                print(f"{Fore.RED}❌ API Error (Attempt {attempt + 1}): {response.status_code}{Style.RESET_ALL}")
-                print(f"{Fore.RED}Response: {response.text}{Style.RESET_ALL}")  # Debugging log
+                # Send Discord alert for API errors
+                error_message = f"❌ Alchemy API Error (Attempt {attempt + 1}): {response.status_code}\n"
+                if response.status_code == 429:
+                    error_message += "Rate limit exceeded. Please check your Alchemy plan."
+                elif response.status_code == 403:
+                    error_message += "Unauthorized. Your Alchemy API key may be expired or invalid."
+                else:
+                    error_message += f"Response: {response.text}"
+                send_discord_alert(error_message)
+                print(f"{Fore.RED}{error_message}{Style.RESET_ALL}")
                 time.sleep(2 ** attempt)  # Exponential backoff
         except Exception as e:
-            print(f"{Fore.RED}❌ Error fetching transactions for {address}: {e}{Style.RESET_ALL}")
+            error_message = f"❌ Error fetching transactions for {address}: {e}"
+            send_discord_alert(error_message)
+            print(f"{Fore.RED}{error_message}{Style.RESET_ALL}")
             time.sleep(2 ** attempt)  # Exponential backoff
     return []  # Return empty list if all retries fail
 
@@ -170,7 +180,12 @@ def track_transaction_chain(from_address, to_address, tx_hash, depth=0, max_dept
     })
 
     if is_thorchain(to_address):
+        # Print Thorchain alert to terminal
         print(f"{Fore.YELLOW}⚠️ Transaction chain stopped: Thorchain detected at {to_address}{Style.RESET_ALL}")
+        # Send Thorchain alert to Discord
+        send_discord_alert(f"⚠️ Thorchain Detected!\n"
+                           f"Transaction Chain Stopped at: {to_address}\n"
+                           f"Transaction Hash: {tx_hash}")
         return chain  # Stop tracking this chain
 
     if is_exchange_or_bridge(to_address):

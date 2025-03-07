@@ -10,8 +10,8 @@ from colorama import init, Fore, Style
 init(autoreset=True)
 
 # Alchemy URL and API Key
-ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
-ALCHEMY_API_KEY = "anQCQJL87O5DaXvr4RtMorjxV-7X7U-3"
+ALCHEMY_URL = "https://eth-mainnet.g.alchemy.com/v2/08Z_zvM9m-WA-s5xwrp5aQOcmrnnG_ML"
+ALCHEMY_API_KEY = "08Z_zvM9m-WA-s5xwrp5aQOcmrnnG_ML"
 
 # Discord Webhook URL
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1346791132817915965/6N7yCTc72eMh6-S3M5GrK8GOPpFQTozaa_sOJWLQ5YSnx1O-VPOSUaS5UrkYj2eYg7qN"
@@ -201,7 +201,6 @@ def track_transactions(addresses):
         current_block = web3.eth.block_number
         if current_block > latest_block:
             for address in addresses:
-                print(f"{Fore.BLUE}📤 Fetching transactions for address: {address}{Style.RESET_ALL}")
                 transactions = get_transactions(address, latest_block + 1, current_block)
                 for tx in transactions:
                     tx_hash, to_address = tx.get("hash"), tx.get("to")
